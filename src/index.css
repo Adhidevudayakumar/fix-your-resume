@@ -1,0 +1,47 @@
+@import "tailwindcss";
+
+/* ── Mammoth HTML resume preview ─────────────────────────────────────────── */
+.original-resume-html h1,
+.original-resume-html h2,
+.original-resume-html h3 {
+  color: #e5e7eb;
+  font-weight: 600;
+  margin-top: 0.75rem;
+  margin-bottom: 0.25rem;
+  border-bottom: 1px solid #374151;
+  padding-bottom: 2px;
+}
+.original-resume-html h1 { font-size: 1.1rem; text-align: center; border: none; }
+.original-resume-html h2 { font-size: 0.875rem; text-transform: uppercase; letter-spacing: 0.05em; }
+.original-resume-html h3 { font-size: 0.825rem; }
+.original-resume-html p  { font-size: 0.8rem; color: #d1d5db; margin-bottom: 0.2rem; line-height: 1.5; }
+.original-resume-html ul { padding-left: 1.25rem; margin-bottom: 0.25rem; }
+.original-resume-html li { font-size: 0.8rem; color: #d1d5db; margin-bottom: 0.15rem; line-height: 1.4; }
+.original-resume-html strong { color: #f3f4f6; }
+.original-resume-html em    { color: #9ca3af; font-style: italic; }
+
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+  body {
+    margin: 0;
+    background: #030712;
+    color: #f9fafb;
+    font-family: system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  #root {
+    min-height: 100vh;
+  }
+  ::-webkit-scrollbar {
+    width: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: #111827;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #374151;
+    border-radius: 3px;
+  }
+}
