@@ -1,11 +1,12 @@
 import { useState, useMemo, useEffect, useRef } from 'react';
 import {
   Copy, Download, Check, Loader2, Undo2, RotateCcw,
-  Pencil, X, Save, ChevronDown, FileText, FileType2,
+  Pencil, X, Save, ChevronDown, FileText, FileType2, AlignLeft,
 } from 'lucide-react';
 import type { DiffToken } from '../lib/diff';
 import { computeDiff } from '../lib/diff';
-import { parseResumeForExport } from '../lib/resume-export-parser';
+import { parseResumeForExport, SECTION_HEADINGS } from '../lib/resume-export-parser';
+import { buildResumePreviewHtml } from '../lib/resume-preview';
 import { downloadAsPDF } from '../lib/export-pdf';
 import { downloadAsDOCX } from '../lib/export-docx';
 import type { ResumeStyle } from '../lib/resume-style';
@@ -77,14 +78,15 @@ export default function OutputPanel({
   const [reverted, setReverted]     = useState<Set<number>>(new Set());
   const [dlOpen, setDlOpen]         = useState(false);
   const [dlLoading, setDlLoading]   = useState<'pdf'|'docx'|null>(null);
+  const [showPlainText, setShowPlainText] = useState(false);
+  const [livePreviewHtml, setLivePreviewHtml] = useState('');
   const textareaRef                 = useRef<HTMLTextAreaElement>(null);
   const dlRef                       = useRef<HTMLDivElement>(null);
 
   // ── Lock initial hunks once per tailoring run ─────────────────────────────
-  // This is the KEY fix: hunk IDs are stable — they never shift on revert.
   const initialHunks = useMemo(
     () => (diff ? groupHunks(diff) : []),
-    [diff],  // only recomputes when a NEW tailor run produces a new diff
+    [diff],
   );
 
   // Reset all local state whenever a fresh tailor run arrives
@@ -92,6 +94,8 @@ export default function OutputPanel({
     setReverted(new Set());
     setEditMode(false);
     setEditDraft(tailored ?? '');
+    setLivePreviewHtml('');
+    setShowPlainText(false);
   }, [diff, tailored]);
 
   // Close download dropdown on outside click
@@ -103,20 +107,34 @@ export default function OutputPanel({
     return () => document.removeEventListener('mousedown', handler);
   }, []);
 
+  // Debounced live preview during edit mode (300ms — same pattern as InputPanel)
+  useEffect(() => {
+    if (!editMode) return;
+    const t = setTimeout(() => {
+      if (editDraft.trim()) {
+        setLivePreviewHtml(buildResumePreviewHtml(editDraft, resumeStyle));
+      }
+    }, 300);
+    return () => clearTimeout(t);
+  }, [editDraft, editMode, resumeStyle]);
+
   // ── Derived text ──────────────────────────────────────────────────────────
-  // If user has saved manual edits, show that. Otherwise reconstruct from reverts.
   const baseText = useMemo(() => {
     if (!tailored) return '';
     if (reverted.size === 0) return tailored;
     return reconstructFromHunks(initialHunks, reverted);
   }, [tailored, initialHunks, reverted]);
 
-  // What to actually display / copy / download
   const displayText = editMode ? editDraft : baseText;
 
+  // Styled HTML for view mode: use AI-generated HTML when available, otherwise build from plain text
+  const viewHtml = useMemo(() => {
+    if (tailoredHtml) return tailoredHtml;
+    if (baseText) return buildResumePreviewHtml(baseText, resumeStyle);
+    return '';
+  }, [tailoredHtml, baseText, resumeStyle]);
+
   // ── Diff for "What Changed" tab ───────────────────────────────────────────
-  // In normal mode: use locked initialHunks (stable IDs, no shifting).
-  // In edit mode: show a live re-diff between original and the draft.
   const editModeDiff = useMemo(() => {
     if (!editMode || !original) return null;
     return computeDiff(original, editDraft);
@@ -131,13 +149,8 @@ export default function OutputPanel({
   const toggleRevert = (hunkId: number, _hunkType: 'added' | 'removed') => {
     setReverted(prev => {
       const next = new Set(prev);
-      if (next.has(hunkId)) {
-        next.delete(hunkId);
-      } else {
-        next.add(hunkId);
-        // When reverting an 'added' hunk, also undo the paired 'removed' hunk
-        // (they typically appear adjacent). Handled implicitly via reconstruction.
-      }
+      if (next.has(hunkId)) next.delete(hunkId);
+      else next.add(hunkId);
       return next;
     });
   };
@@ -206,6 +219,105 @@ export default function OutputPanel({
 
   const revertedCount = reverted.size;
 
+  // ── Styled hunk renderer for "What Changed" tab ───────────────────────────
+  // Applies resume font/heading styles inside each hunk's text, detecting section headings.
+  const renderStyledHunk = (hunk: DiffHunk) => {
+    const isReverted = reverted.has(hunk.id);
+    const lines = hunk.text.split('\n');
+
+    const renderedLines = lines.map((line, lineIdx) => {
+      const trimmed = line.trim().toLowerCase().replace(/:$/, '');
+      const isHeading = trimmed.length > 0 && SECTION_HEADINGS.has(trimmed);
+
+      const headingStyle: React.CSSProperties = isHeading ? {
+        display: 'block',
+        color: `#${resumeStyle.headingColor}`,
+        fontWeight: resumeStyle.headingBold ? 700 : 600,
+        textTransform: resumeStyle.headingUppercase ? 'uppercase' : 'none',
+        letterSpacing: resumeStyle.headingUppercase ? '0.8px' : undefined,
+        borderBottom: `0.75pt solid #${resumeStyle.ruleColor}`,
+        paddingBottom: '1.5pt',
+        marginTop: lineIdx === 0 ? undefined : '10pt',
+        marginBottom: '4pt',
+      } : {};
+
+      const isLast = lineIdx === lines.length - 1;
+      const content = line + (isLast ? '' : '\n');
+
+      if (hunk.type === 'same') {
+        return <span key={lineIdx} style={headingStyle}>{content}</span>;
+      }
+
+      if (hunk.type === 'added') {
+        return (
+          <span
+            key={lineIdx}
+            style={headingStyle}
+            className={isReverted
+              ? 'bg-gray-700/40 text-gray-500 line-through rounded px-0.5'
+              : 'bg-green-400/20 text-green-300 rounded px-0.5'}
+          >
+            {content}
+          </span>
+        );
+      }
+
+      // removed
+      return (
+        <span
+          key={lineIdx}
+          style={headingStyle}
+          className={isReverted
+            ? 'bg-green-400/20 text-green-300 rounded px-0.5'
+            : 'bg-red-400/15 text-red-400 line-through rounded px-0.5'}
+        >
+          {content}
+        </span>
+      );
+    });
+
+    if (hunk.type === 'same') {
+      return <span key={hunk.id}>{renderedLines}</span>;
+    }
+
+    if (hunk.type === 'added') {
+      return (
+        <span key={hunk.id} className="group relative inline">
+          {renderedLines}
+          <button
+            onClick={() => toggleRevert(hunk.id, 'added')}
+            title={isReverted ? 'Restore this addition' : 'Remove this addition'}
+            className={`invisible group-hover:visible inline-flex items-center gap-0.5 ml-0.5 text-[10px] px-1 py-0.5 rounded transition-colors align-middle ${
+              isReverted
+                ? 'bg-green-500/20 text-green-400 hover:bg-green-500/30'
+                : 'bg-gray-700 text-gray-400 hover:bg-red-500/30 hover:text-red-300'
+            }`}
+          >
+            {isReverted ? <><Check size={9} /> keep</> : <><X size={9} /> remove</>}
+          </button>
+        </span>
+      );
+    }
+
+    // removed
+    return (
+      <span key={hunk.id} className="group relative inline">
+        {renderedLines}
+        <button
+          onClick={() => toggleRevert(hunk.id, 'removed')}
+          title={isReverted ? 'Remove this text again' : 'Restore this original text'}
+          className={`invisible group-hover:visible inline-flex items-center gap-0.5 ml-0.5 text-[10px] px-1 py-0.5 rounded transition-colors align-middle ${
+            isReverted
+              ? 'bg-red-500/20 text-red-400 hover:bg-red-500/30'
+              : 'bg-gray-700 text-gray-400 hover:bg-green-500/30 hover:text-green-300'
+          }`}
+        >
+          {isReverted ? <><X size={9} /> remove</> : <><Undo2 size={9} /> restore</>}
+        </button>
+      </span>
+    );
+  };
+
   // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div className="bg-gray-900 border border-gray-800 rounded-xl flex flex-col min-h-[540px]">
@@ -213,7 +325,6 @@ export default function OutputPanel({
       {/* ── Tab bar ── */}
       <div className="flex items-center justify-between px-4 py-2.5 border-b border-gray-800 gap-2">
         <div className="flex gap-1">
-          {/* Original tab — only shown when a file has been uploaded */}
           {original && (
             <button
               onClick={() => setTab('original')}
@@ -229,7 +340,7 @@ export default function OutputPanel({
               ${tab === 'tailored' ? 'bg-gray-800 text-gray-100' : 'text-gray-500 hover:text-gray-300'}`}
           >
             <span className="flex items-center gap-1.5">
-              Tailored
+              Output
               {editMode && <span className="w-1.5 h-1.5 rounded-full bg-amber-400 inline-block" />}
             </span>
           </button>
@@ -250,6 +361,22 @@ export default function OutputPanel({
         </div>
 
         <div className="flex items-center gap-1 ml-auto">
+          {/* Plain-text toggle (Tailored tab, view mode only) */}
+          {tailored && !editMode && tab === 'tailored' && (
+            <button
+              onClick={() => setShowPlainText(p => !p)}
+              aria-pressed={showPlainText}
+              aria-label={showPlainText ? 'Switch to styled view' : 'Switch to plain text view'}
+              title={showPlainText ? 'Show styled preview' : 'Show plain text'}
+              className={`flex items-center gap-1.5 text-xs transition-colors px-2 py-1.5 rounded-md hover:bg-gray-800 ${
+                showPlainText ? 'text-amber-400' : 'text-gray-500 hover:text-gray-300'
+              }`}
+            >
+              <AlignLeft size={12} />
+              {showPlainText ? 'Styled' : 'Plain'}
+            </button>
+          )}
+
           {/* Edit / Save / Discard */}
           {tailored && !editMode && (
             <button
@@ -388,7 +515,7 @@ export default function OutputPanel({
           </div>
         )}
 
-        {/* ── Original tab — rendered LaTeX HTML preview ── */}
+        {/* ── Original tab ── */}
         {!loading && !error && original && tab === 'original' && (
           <div className="space-y-2">
             <p className="text-[10px] text-gray-600 uppercase tracking-wider">
@@ -396,7 +523,7 @@ export default function OutputPanel({
             </p>
             {originalHtml ? (
               <div
-                className="bg-white rounded-xl p-5 overflow-auto border border-gray-700"
+                className="resume-preview-container bg-white rounded-xl p-5 overflow-auto border border-gray-700"
                 style={{ maxHeight: '640px' }}
                 dangerouslySetInnerHTML={{ __html: originalHtml }}
               />
@@ -408,50 +535,71 @@ export default function OutputPanel({
           </div>
         )}
 
-        {/* ── Tailored Resume tab ── */}
+        {/* ── Output (Tailored) tab ── */}
         {!loading && !error && tailored && tab === 'tailored' && (
-          <div className="h-full">
-            {editMode ? (
-              /* ── Edit mode: real-time editable textarea ── */
-              <div className="space-y-2">
-                <div className="flex items-center gap-2 text-xs text-amber-400/80 bg-amber-400/5 border border-amber-400/20 rounded-lg px-3 py-2">
-                  <Pencil size={11} />
-                  <span>Edit mode — changes are live. Click <strong>Save</strong> to keep or <strong>Discard</strong> to cancel.</span>
-                </div>
-                <textarea
-                  ref={textareaRef}
-                  value={editDraft}
-                  onChange={e => setEditDraft(e.target.value)}
-                  rows={32}
-                  spellCheck={false}
-                  className="w-full bg-gray-800/60 border border-amber-400/30 rounded-xl px-4 py-3 text-sm text-gray-200 font-mono leading-relaxed focus:outline-none focus:border-amber-400/60 resize-none"
-                />
+          <div className="h-full space-y-3">
+
+            {/* Edit mode banner */}
+            {editMode && (
+              <div className="flex items-center gap-2 text-xs text-amber-400/80 bg-amber-400/5 border border-amber-400/20 rounded-lg px-3 py-2">
+                <Pencil size={11} />
+                <span>Edit mode — type in the editor. The preview updates live. Click <strong>Save</strong> to keep or <strong>Discard</strong> to cancel.</span>
               </div>
-            ) : (
-              /* ── View mode: formatted pre ── */
-              <pre
-                className="text-sm text-gray-200 whitespace-pre-wrap font-mono leading-relaxed cursor-text select-text"
-                onDoubleClick={enterEditMode}
-                title="Double-click to edit"
-              >
-                {baseText}
-              </pre>
             )}
-            {!editMode && tailoredHtml && (
-              <details className="mt-4 group">
-                <summary className="text-xs text-gray-600 hover:text-gray-400 cursor-pointer select-none mb-2">
-                  Rendered preview (same LaTeX style) ▸
-                </summary>
+
+            {/* Edit mode: split pane */}
+            {editMode && (
+              <div className="flex flex-col md:flex-row gap-3">
+                {/* Left — textarea */}
+                <div className="flex-1 min-w-0">
+                  <p className="text-[10px] text-gray-600 uppercase tracking-wider mb-1.5">Plain text editor</p>
+                  <textarea
+                    ref={textareaRef}
+                    value={editDraft}
+                    onChange={e => setEditDraft(e.target.value)}
+                    rows={32}
+                    spellCheck={false}
+                    className="w-full bg-gray-800/60 border border-amber-400/30 rounded-xl px-4 py-3 text-sm text-gray-200 font-mono leading-relaxed focus:outline-none focus:border-amber-400/60 resize-none"
+                  />
+                </div>
+                {/* Right — live styled preview */}
+                <div className="flex-1 min-w-0">
+                  <p className="text-[10px] text-gray-600 uppercase tracking-wider mb-1.5">Live preview</p>
+                  <div
+                    aria-label="Live styled preview"
+                    role="region"
+                    className="resume-preview-container bg-white rounded-xl overflow-auto border border-gray-700"
+                    style={{ maxHeight: '640px', minHeight: '200px' }}
+                    dangerouslySetInnerHTML={{ __html: livePreviewHtml || viewHtml }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* View mode: styled HTML (default) or plain text (toggle) */}
+            {!editMode && (
+              showPlainText ? (
+                <pre
+                  className="text-sm text-gray-200 whitespace-pre-wrap font-mono leading-relaxed cursor-text select-text"
+                  onDoubleClick={enterEditMode}
+                  title="Double-click to edit"
+                >
+                  {baseText}
+                </pre>
+              ) : (
                 <div
-                  className="bg-white rounded-xl p-5 overflow-auto border border-gray-700"
-                  style={{ maxHeight: '560px' }}
-                  dangerouslySetInnerHTML={{ __html: tailoredHtml }}
+                  className="resume-preview-container bg-white rounded-xl overflow-auto border border-gray-700"
+                  style={{ maxHeight: '640px' }}
+                  onDoubleClick={enterEditMode}
+                  title="Double-click to edit"
+                  dangerouslySetInnerHTML={{ __html: viewHtml }}
                 />
-              </details>
+              )
             )}
-            {!editMode && tailored && (
-              <p className="text-xs text-gray-700 mt-3 text-center">
-                Double-click anywhere to edit · or use the <Pencil size={10} className="inline" /> Edit button above
+
+            {!editMode && (
+              <p className="text-xs text-gray-700 text-center">
+                Double-click to edit · use <Pencil size={10} className="inline" /> Edit above · toggle <AlignLeft size={10} className="inline" /> for plain text
               </p>
             )}
           </div>
@@ -461,14 +609,13 @@ export default function OutputPanel({
         {!loading && !error && tailored && tab === 'diff' && (
           <div className="space-y-3">
 
-            {/* ── Edit mode: split — editable textarea on top, live diff below ── */}
+            {/* Edit mode */}
             {editMode && (
               <div className="space-y-3">
                 <div className="flex items-center gap-2 text-xs text-amber-400/80 bg-amber-400/5 border border-amber-400/20 rounded-lg px-3 py-2">
                   <Pencil size={11} />
                   <span>Editing — diff updates live below as you type. <strong>Save</strong> to keep or <strong>Discard</strong> to cancel.</span>
                 </div>
-                {/* Editable area */}
                 <textarea
                   ref={textareaRef}
                   value={editDraft}
@@ -477,10 +624,17 @@ export default function OutputPanel({
                   spellCheck={false}
                   className="w-full bg-gray-800/60 border border-amber-400/30 rounded-xl px-4 py-3 text-sm text-gray-200 font-mono leading-relaxed focus:outline-none focus:border-amber-400/60 resize-none"
                 />
-                {/* Live diff */}
                 <div className="border-t border-gray-800 pt-3">
                   <p className="text-[10px] text-gray-600 uppercase tracking-wider mb-2">Live diff vs original</p>
-                  <div className="text-sm font-mono leading-relaxed whitespace-pre-wrap">
+                  <div
+                    className="diff-styled-container whitespace-pre-wrap"
+                    style={{
+                      fontFamily: `'${resumeStyle.fontFamily}', sans-serif`,
+                      fontSize: `${resumeStyle.bodyFontSize}pt`,
+                      lineHeight: resumeStyle.lineHeight,
+                      color: `#${resumeStyle.bodyColor}`,
+                    }}
+                  >
                     {editModeHunks.length === 0
                       ? <span className="text-gray-600 text-xs">No changes yet…</span>
                       : editModeHunks.map((hunk, i) => {
@@ -494,7 +648,7 @@ export default function OutputPanel({
               </div>
             )}
 
-            {/* Legend — normal mode only */}
+            {/* Legend — normal mode */}
             {!editMode && (
               <div className="flex flex-wrap items-center gap-3 text-xs text-gray-500 pb-3 border-b border-gray-800">
                 <span className="flex items-center gap-1.5">
@@ -511,71 +665,18 @@ export default function OutputPanel({
               </div>
             )}
 
-            {/* Normal mode: locked initial hunks with per-hunk revert buttons */}
+            {/* Normal mode: styled diff with resume font/colors + per-hunk reverts */}
             {!editMode && (
-              <div className="text-sm font-mono leading-relaxed whitespace-pre-wrap">
-                {initialHunks.map(hunk => {
-                  const isReverted = reverted.has(hunk.id);
-
-                  if (hunk.type === 'same') {
-                    return <span key={hunk.id}>{hunk.text}</span>;
-                  }
-
-                  if (hunk.type === 'added') {
-                    return (
-                      <span key={hunk.id} className="group relative inline">
-                        <span className={`rounded px-0.5 transition-all ${
-                          isReverted
-                            ? 'bg-gray-700/40 text-gray-500 line-through'
-                            : 'bg-green-400/20 text-green-300'
-                        }`}>
-                          {hunk.text}
-                        </span>
-                        <button
-                          onClick={() => toggleRevert(hunk.id, 'added')}
-                          title={isReverted ? 'Restore this addition' : 'Remove this addition'}
-                          className={`invisible group-hover:visible inline-flex items-center gap-0.5 ml-0.5 text-[10px] px-1 py-0.5 rounded transition-colors align-middle ${
-                            isReverted
-                              ? 'bg-green-500/20 text-green-400 hover:bg-green-500/30'
-                              : 'bg-gray-700 text-gray-400 hover:bg-red-500/30 hover:text-red-300'
-                          }`}
-                        >
-                          {isReverted
-                            ? <><Check size={9} /> keep</>
-                            : <><X size={9} /> remove</>
-                          }
-                        </button>
-                      </span>
-                    );
-                  }
-
-                  // type === 'removed'
-                  return (
-                    <span key={hunk.id} className="group relative inline">
-                      <span className={`rounded px-0.5 transition-all ${
-                        isReverted
-                          ? 'bg-green-400/20 text-green-300'           // restored = shown as added
-                          : 'bg-red-400/15 text-red-400 line-through'
-                      }`}>
-                        {hunk.text}
-                      </span>
-                      <button
-                        onClick={() => toggleRevert(hunk.id, 'removed')}
-                        title={isReverted ? 'Remove this text again' : 'Restore this original text'}
-                        className={`invisible group-hover:visible inline-flex items-center gap-0.5 ml-0.5 text-[10px] px-1 py-0.5 rounded transition-colors align-middle ${
-                          isReverted
-                            ? 'bg-red-500/20 text-red-400 hover:bg-red-500/30'
-                            : 'bg-gray-700 text-gray-400 hover:bg-green-500/30 hover:text-green-300'
-                        }`}
-                      >
-                        {isReverted
-                          ? <><X size={9} /> remove</>
-                          : <><Undo2 size={9} /> restore</>
-                        }
-                      </button>
-                    </span>
-                  );
-                })}
+              <div
+                className="diff-styled-container whitespace-pre-wrap"
+                style={{
+                  fontFamily: `'${resumeStyle.fontFamily}', sans-serif`,
+                  fontSize: `${resumeStyle.bodyFontSize}pt`,
+                  lineHeight: resumeStyle.lineHeight,
+                  color: `#${resumeStyle.bodyColor}`,
+                }}
+              >
+                {initialHunks.map(hunk => renderStyledHunk(hunk))}
               </div>
             )}
           </div>

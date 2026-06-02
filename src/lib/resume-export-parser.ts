@@ -24,7 +24,7 @@ export interface StructuredResume {
 }
 
 // ── Patterns ──────────────────────────────────────────────────────────────────
-const SECTION_HEADINGS = new Set([
+export const SECTION_HEADINGS = new Set([
   'experience','work experience','professional experience','employment history','work history',
   'projects','personal projects','key projects','academic projects','relevant projects',
   'education','academic background','qualifications',

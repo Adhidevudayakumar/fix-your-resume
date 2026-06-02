@@ -20,6 +20,19 @@
 .original-resume-html strong { color: #f3f4f6; }
 .original-resume-html em    { color: #9ca3af; font-style: italic; }
 
+/* ── Resume preview isolation ────────────────────────────────────────────── */
+/* Prevents app's body color/font from bleeding into white resume containers */
+.resume-preview-container {
+  color: initial;
+  font-family: initial;
+}
+
+/* Diff styled container — prevent link color clashing with diff highlights */
+.diff-styled-container a {
+  color: inherit;
+  text-decoration: none;
+}
+
 @layer base {
   * {
     box-sizing: border-box;
