@@ -8,6 +8,7 @@ import AtsWarning from './components/AtsWarning';
 import KeywordBadges from './components/KeywordBadges';
 import { parseResume } from './lib/resume-parser';
 import { extractJDKeywords } from './lib/jd-extractor';
+import { buildResumePreviewHtml } from './lib/resume-preview';
 import { buildLatexUserMessage, LATEX_SYSTEM_PROMPT, estimateTokens } from './lib/prompt';
 import { callProvider } from './lib/providers';
 import { computeDiff, type DiffToken } from './lib/diff';
@@ -155,6 +156,7 @@ export default function App() {
   const handleTailoredChange = (v: string) => {
     setTailoredPlain(v);
     setDiff(computeDiff(latexParsed?.plainText ?? '', v));
+    setTailoredHtml(buildResumePreviewHtml(v, resumeStyle));
   };
 
   return (
